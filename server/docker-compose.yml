@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tavern
+      POSTGRES_PASSWORD: tavern
+      POSTGRES_DB: tavern
+    volumes:
+      - tavern-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tavern"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg2://tavern:tavern@db:5432/tavern
+      TAVERN_SECRET_KEY: ${TAVERN_SECRET_KEY:-change-me}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      TAVERN_CORS_ORIGINS: ${TAVERN_CORS_ORIGINS:-*}
+    ports:
+      - "5000:5000"
+    volumes:
+      - tavern-uploads:/srv/tavern/uploads
+
+volumes:
+  tavern-pgdata:
+  tavern-uploads:
