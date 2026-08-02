@@ -1,12 +1,20 @@
-/** My Characters page: roster of the player's characters and a full sheet editor. */
+/** My Characters page: roster of the player's characters and a full sheet editor.
+ *
+ * Pickers (species, class, subclass, background, …) are powered by the
+ * normalized reference data served from `/api/srd/*` (see `server/ingest.py`).
+ * When the reference tables have not been ingested, fields gracefully fall
+ * back to free-text inputs.
+ */
 
 import {TavernApi} from "./tavern-api.js";
-import {abilityMod, avatarHtml, esc, pLoadUser, proficiencyBonus, renderHero, renderSignInPrompt, toast} from "./tavern-ui.js";
+import {abilityMod, avatarHtml, esc, pLoadUser, proficiencyBonus, renderHero, renderSignInPrompt, secureRandomInt, toast} from "./tavern-ui.js";
 
 const hero = document.getElementById("tvn-hero");
 const root = document.getElementById("tvn-root");
 
 let currentUser = null;
+let srdOptions = null;
+let srdSpells = null;
 
 const ABILITIES = [
 	["str", "Strength"], ["dex", "Dexterity"], ["con", "Constitution"],
@@ -21,16 +29,60 @@ const SKILLS = [
 	["Stealth", "dex"], ["Survival", "wis"],
 ];
 
-const ALIGNMENTS = [
+const FALLBACK_ALIGNMENTS = [
 	"Lawful Good", "Neutral Good", "Chaotic Good",
 	"Lawful Neutral", "True Neutral", "Chaotic Neutral",
 	"Lawful Evil", "Neutral Evil", "Chaotic Evil", "Unaligned",
 ];
 
+const STANDARD_ARRAY = [15, 14, 13, 12, 10, 8];
+
 const PERSONA_FIELDS = [
 	["traits", "Personality Traits"], ["ideals", "Ideals"], ["bonds", "Bonds"], ["flaws", "Flaws"],
 	["appearance", "Appearance"], ["backstory", "Backstory"], ["allies", "Allies & Organizations"], ["notes", "Notes"],
 ];
+
+const pLoadSrd = async () => {
+	if (srdOptions) return;
+	try {
+		srdOptions = await TavernApi.pGetSrdOptions();
+	} catch (e) {
+		srdOptions = {ingested: false, alignments: FALLBACK_ALIGNMENTS, races: [], classes: [], backgrounds: [], languages: [], feats: []};
+	}
+	if (srdOptions.ingested) {
+		try {
+			srdSpells = await TavernApi.pGetSrdSpells();
+		} catch (e) {
+			srdSpells = null;
+		}
+	}
+};
+
+/**
+ * A picker-aware field: a `<select>` when reference entries exist, otherwise a
+ * free-text input. A current value missing from the list is kept as an extra
+ * "(custom)" option so legacy values still display truthfully.
+ */
+const pickerHtml = (name, entries, current, {labelFn = null} = {}) => {
+	if (!entries?.length) {
+		return `<input class="tvn-input" name="${name}" maxlength="64" value="${esc(current || "")}">`;
+	}
+	const getLabel = labelFn || (entry => `${entry.name}${entry.source ? ` (${entry.source})` : ""}`);
+	const known = entries.some(entry => entry.name.toLowerCase() === (current || "").toLowerCase());
+	return `
+		<select class="tvn-select" name="${name}">
+			<option value="">—</option>
+			${current && !known ? `<option value="${esc(current)}" selected>${esc(current)} (custom)</option>` : ""}
+			${entries.map(entry => `<option value="${esc(entry.name)}" ${current && entry.name.toLowerCase() === current.toLowerCase() ? "selected" : ""}>${esc(getLabel(entry))}</option>`).join("")}
+		</select>
+	`;
+};
+
+/** 4d6 drop lowest — the site's Stat Generator convention ("4d6dl1"), with a CSPRNG. */
+const roll4d6DropLowest = () => {
+	const dice = [1, 2, 3, 4].map(() => secureRandomInt(6) + 1).sort((a, b) => b - a);
+	return {kept: dice.slice(0, 3), dropped: dice[3], total: dice[0] + dice[1] + dice[2]};
+};
 
 /* ==================== Roster ==================== */
 
@@ -99,7 +151,7 @@ const renderEditor = async (characterId) => {
 
 	let character;
 	try {
-		({character} = await TavernApi.pGetCharacter(characterId));
+		[{character}] = await Promise.all([TavernApi.pGetCharacter(characterId), pLoadSrd()]);
 	} catch (e) {
 		toast(e.message, "danger");
 		return renderRoster();
@@ -113,6 +165,7 @@ const renderEditor = async (characterId) => {
 	const equipment = sheet.equipment || {};
 	const coins = equipment.coins || {};
 	const persona = sheet.persona || {};
+	const alignments = srdOptions.alignments?.length ? srdOptions.alignments : FALLBACK_ALIGNMENTS;
 
 	renderHero(hero, {
 		title: character.name,
@@ -143,6 +196,10 @@ const renderEditor = async (characterId) => {
 		</div>
 	`).join("");
 
+	const languagesDatalist = srdOptions.languages?.length
+		? `<datalist id="dl-languages">${srdOptions.languages.map(lang => `<option value="${esc(lang.name)}">`).join("")}</datalist>`
+		: "";
+
 	root.innerHTML = `
 		<div class="tvn-flex-between" style="margin-bottom: 12px;">
 			<button class="tvn-btn tvn-btn--ghost tvn-btn--sm" id="btn-back">← All characters</button>
@@ -158,19 +215,20 @@ const renderEditor = async (characterId) => {
 			<h2 class="tvn-section-title tvn-mt-0">Identity</h2>
 			<div class="tvn-form-row">
 				<div class="tvn-field"><label class="tvn-label">Name</label><input class="tvn-input" name="name" required maxlength="128" value="${esc(character.name)}"></div>
-				<div class="tvn-field"><label class="tvn-label">Species / Race</label><input class="tvn-input" name="race" maxlength="64" value="${esc(character.race || "")}"></div>
-				<div class="tvn-field"><label class="tvn-label">Class</label><input class="tvn-input" name="className" maxlength="64" value="${esc(character.className || "")}"></div>
-				<div class="tvn-field"><label class="tvn-label">Subclass</label><input class="tvn-input" name="subclass" maxlength="64" value="${esc(sheet.subclass || "")}"></div>
+				<div class="tvn-field"><label class="tvn-label">Species / Race</label>${pickerHtml("race", srdOptions.races, character.race)}</div>
+				<div class="tvn-field" id="wrp-subrace"></div>
+				<div class="tvn-field"><label class="tvn-label">Class</label>${pickerHtml("className", srdOptions.classes, character.className, {labelFn: c => `${c.name} (${c.source}${c.hitDie ? `, ${c.hitDie}` : ""})`})}</div>
+				<div class="tvn-field" id="wrp-subclass"></div>
 			</div>
 			<div class="tvn-form-row">
 				<div class="tvn-field"><label class="tvn-label">Level</label><input class="tvn-input" type="number" name="level" min="1" max="20" value="${character.level}"></div>
 				<div class="tvn-field"><label class="tvn-label">XP</label><input class="tvn-input" type="number" name="xp" min="0" value="${sheet.xp ?? ""}"></div>
-				<div class="tvn-field"><label class="tvn-label">Background</label><input class="tvn-input" name="background" maxlength="64" value="${esc(sheet.background || "")}"></div>
+				<div class="tvn-field"><label class="tvn-label">Background</label>${pickerHtml("background", srdOptions.backgrounds, sheet.background)}</div>
 				<div class="tvn-field">
 					<label class="tvn-label">Alignment</label>
 					<select class="tvn-select" name="alignment">
 						<option value="">—</option>
-						${ALIGNMENTS.map(a => `<option ${sheet.alignment === a ? "selected" : ""}>${a}</option>`).join("")}
+						${alignments.map(a => `<option ${sheet.alignment === a ? "selected" : ""}>${a}</option>`).join("")}
 					</select>
 				</div>
 			</div>
@@ -180,6 +238,12 @@ const renderEditor = async (characterId) => {
 
 			<h2 class="tvn-section-title">Abilities <span class="tvn-muted" style="text-transform: none; letter-spacing: 0;">— proficiency bonus <b id="prof-bonus">+${proficiencyBonus(character.level)}</b></span></h2>
 			<div class="tvn-ability-row">${abilityTiles}</div>
+			<div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px;">
+				<button class="tvn-btn tvn-btn--ghost tvn-btn--sm" type="button" id="btn-roll-stats" title="Rolled with a cryptographically secure RNG">🎲 Roll 4d6, drop lowest</button>
+				<button class="tvn-btn tvn-btn--ghost tvn-btn--sm" type="button" id="btn-standard-array">Standard array (15, 14, 13, 12, 10, 8)</button>
+				<a class="tvn-muted" style="font-size: 12px;" href="statgen.html" target="_blank" rel="noopener">Advanced? Use the Stat Generator ↗</a>
+			</div>
+			<div class="tvn-muted" id="roll-detail" style="font-size: 12px; margin-top: 6px;"></div>
 
 			<h2 class="tvn-section-title">Combat</h2>
 			<div class="tvn-form-row">
@@ -201,7 +265,7 @@ const renderEditor = async (characterId) => {
 			<div>${skillChecks}</div>
 
 			<div class="tvn-form-row" style="margin-top: 10px;">
-				<div class="tvn-field"><label class="tvn-label">Languages</label><input class="tvn-input" name="languages" value="${esc(profs.languages || "")}" placeholder="Common, Elvish…"></div>
+				<div class="tvn-field"><label class="tvn-label">Languages</label><input class="tvn-input" name="languages" list="dl-languages" value="${esc(profs.languages || "")}" placeholder="Common, Elvish…">${languagesDatalist}</div>
 				<div class="tvn-field"><label class="tvn-label">Tools & Other Proficiencies</label><input class="tvn-input" name="tools" value="${esc(profs.tools || "")}"></div>
 			</div>
 
@@ -219,6 +283,11 @@ const renderEditor = async (characterId) => {
 				<div class="tvn-field"><label class="tvn-label">Spell Save DC</label><input class="tvn-input" type="number" name="saveDc" value="${spellcasting.saveDc ?? ""}"></div>
 				<div class="tvn-field"><label class="tvn-label">Spell Attack Bonus</label><input class="tvn-input" type="number" name="attackBonus" value="${spellcasting.attackBonus ?? ""}"></div>
 				<div class="tvn-field"><label class="tvn-label">Spell Slots</label><input class="tvn-input" name="slots" value="${esc(spellcasting.slots || "")}" placeholder="4 / 3 / 2"></div>
+			</div>
+			<div class="tvn-field" id="wrp-spell-search" style="position: relative; display: none;">
+				<label class="tvn-label">Add a Spell</label>
+				<input class="tvn-input" id="spell-search" placeholder="Search spells… (e.g. Fireball)" autocomplete="off">
+				<div id="spell-results" class="tvn-card" style="position: absolute; z-index: 10; left: 0; right: 0; top: 100%; margin-top: 2px; padding: 4px; display: none; max-height: 240px; overflow-y: auto;"></div>
 			</div>
 			<div class="tvn-field">
 				<label class="tvn-label">Spells Known / Prepared <span class="tvn-muted">(one per line)</span></label>
@@ -247,6 +316,66 @@ const renderEditor = async (characterId) => {
 		</form>
 	`;
 
+	/* ==================== Dependent pickers (subrace, subclass) ==================== */
+
+	const raceField = root.querySelector(`[name="race"]`);
+	const classField = root.querySelector(`[name="className"]`);
+
+	const renderSubracePicker = (current = sheet.subrace) => {
+		const wrp = root.querySelector("#wrp-subrace");
+		const race = srdOptions.races.find(r => r.name.toLowerCase() === (raceField.value || "").toLowerCase());
+		const entries = race?.subraces || [];
+		if (!entries.length && !current) {
+			wrp.innerHTML = "";
+			wrp.style.display = "none";
+			return;
+		}
+		wrp.style.display = "";
+		wrp.innerHTML = `<label class="tvn-label">Subrace / Lineage</label>${pickerHtml("subrace", entries, current)}`;
+	};
+
+	const renderSubclassPicker = (current = sheet.subclass) => {
+		const wrp = root.querySelector("#wrp-subclass");
+		const cls = srdOptions.classes.find(c => c.name.toLowerCase() === (classField.value || "").toLowerCase());
+		const entries = cls?.subclasses || [];
+		if (!entries.length && !current) {
+			wrp.innerHTML = "";
+			wrp.style.display = "none";
+			return;
+		}
+		wrp.style.display = "";
+		wrp.innerHTML = `<label class="tvn-label">Subclass</label>${pickerHtml("subclass", entries, current)}`;
+	};
+
+	renderSubracePicker();
+	renderSubclassPicker();
+	raceField.addEventListener("change", () => renderSubracePicker(""));
+	classField.addEventListener("change", () => renderSubclassPicker(""));
+
+	/* ==================== Random stats ==================== */
+
+	const rollDetailEl = root.querySelector("#roll-detail");
+
+	const setAbility = (key, value) => {
+		const input = root.querySelector(`[name="ability-${key}"]`);
+		input.value = value;
+		root.querySelector(`[data-mod-for="${key}"]`).textContent = abilityMod(value);
+	};
+
+	root.querySelector("#btn-roll-stats").addEventListener("click", () => {
+		const details = ABILITIES.map(([key, label]) => {
+			const roll = roll4d6DropLowest();
+			setAbility(key, roll.total);
+			return `${label.slice(0, 3).toUpperCase()} ${roll.kept.join("+")}(${roll.dropped}) = ${roll.total}`;
+		});
+		rollDetailEl.textContent = `Rolled: ${details.join(" · ")}`;
+	});
+
+	root.querySelector("#btn-standard-array").addEventListener("click", () => {
+		ABILITIES.forEach(([key], i) => setAbility(key, STANDARD_ARRAY[i]));
+		rollDetailEl.textContent = "Standard array applied in order — swap values between abilities to taste.";
+	});
+
 	// Live ability modifier + proficiency bonus updates
 	ABILITIES.forEach(([key]) => {
 		const input = root.querySelector(`[name="ability-${key}"]`);
@@ -257,6 +386,47 @@ const renderEditor = async (characterId) => {
 	root.querySelector(`[name="level"]`).addEventListener("input", evt => {
 		root.querySelector("#prof-bonus").textContent = `+${proficiencyBonus(evt.target.value)}`;
 	});
+
+	/* ==================== Spell search ==================== */
+
+	if (srdSpells?.spells?.length) {
+		const wrp = root.querySelector("#wrp-spell-search");
+		const searchEl = root.querySelector("#spell-search");
+		const resultsEl = root.querySelector("#spell-results");
+		const spellsTextarea = root.querySelector(`[name="spells"]`);
+		wrp.style.display = "";
+
+		const hideResults = () => { resultsEl.style.display = "none"; };
+
+		searchEl.addEventListener("input", () => {
+			const query = searchEl.value.trim().toLowerCase();
+			if (query.length < 2) return hideResults();
+			const matches = srdSpells.spells.filter(s => s.name.toLowerCase().includes(query)).slice(0, 12);
+			if (!matches.length) return hideResults();
+			resultsEl.innerHTML = matches.map(s => `
+				<div class="tvn-member" style="cursor: pointer; padding: 5px 8px;" data-spell="${esc(s.name)}">
+					<div style="flex: 1;">${esc(s.name)}</div>
+					<span class="tvn-muted" style="font-size: 11px;">${s.level ? `Lv ${s.level}` : "Cantrip"} · ${esc(srdSpells.schools[s.school] || s.school || "")} · ${esc(s.source)}</span>
+				</div>
+			`).join("");
+			resultsEl.style.display = "";
+		});
+
+		resultsEl.addEventListener("mousedown", evt => {
+			const row = evt.target.closest("[data-spell]");
+			if (!row) return;
+			const existing = spellsTextarea.value.split("\n").map(l => l.trim().toLowerCase());
+			if (!existing.includes(row.dataset.spell.toLowerCase())) {
+				spellsTextarea.value = `${spellsTextarea.value.trim()}${spellsTextarea.value.trim() ? "\n" : ""}${row.dataset.spell}`;
+			}
+			searchEl.value = "";
+			hideResults();
+		});
+
+		searchEl.addEventListener("blur", () => setTimeout(hideResults, 150));
+	}
+
+	/* ==================== Actions ==================== */
 
 	root.querySelector("#btn-back").addEventListener("click", renderRoster);
 
@@ -290,6 +460,7 @@ const renderEditor = async (characterId) => {
 
 		const nextSheet = {
 			...sheet,
+			subrace: data.get("subrace") || null,
 			subclass: data.get("subclass") || null,
 			background: data.get("background") || null,
 			alignment: data.get("alignment") || null,

@@ -44,6 +44,14 @@ export const abilityMod = (score) => {
 
 export const proficiencyBonus = (level) => Math.ceil((Number(level) || 1) / 4) + 1;
 
+/** Cryptographically-secure uniform integer in [0, maxExclusive), via rejection sampling. */
+export const secureRandomInt = (maxExclusive) => {
+	const buf = new Uint32Array(1);
+	const limit = 4294967296 - (4294967296 % maxExclusive);
+	do { crypto.getRandomValues(buf); } while (buf[0] >= limit);
+	return buf[0] % maxExclusive;
+};
+
 /**
  * Roll a dice formula like "2d6+1d4+3" or "1d20-1".
  * Returns {formula, rolls: [{die, results}], modifier, total} or null if invalid.
@@ -67,7 +75,7 @@ export const rollFormula = (formula) => {
 			if (!count || !size) return null;
 			const results = [];
 			for (let i = 0; i < count; ++i) {
-				const r = Math.floor(Math.random() * size) + 1;
+				const r = secureRandomInt(size) + 1;
 				results.push(r);
 				total += sign * r;
 			}

@@ -36,6 +36,24 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 Without `DATABASE_URL` the server uses a local SQLite file (`server/tavern.db`) —
 handy for development; use Postgres for anything real.
 
+## Ingesting the 5e reference data
+
+The character-creation pickers and rules validation are powered by the site's
+own data JSONs, ingested into normalized tables (races, subraces, classes,
+subclasses, backgrounds, languages, feats, spells). The source JSONs are
+**read-only inputs — they are never modified**. Re-running is idempotent.
+
+```bash
+# Local venv (data dir auto-detected as ../data):
+.venv/bin/python ingest.py
+
+# Docker (the compose file mounts ../data read-only):
+docker compose exec api python ingest.py --data-dir /srv/tavern/srd-data
+```
+
+Until ingestion has been run, the pickers fall back to free-text inputs and
+reference validation is skipped, so a fresh dev setup still works.
+
 ## Configuration
 
 Copy `.env.example` to `.env` (auto-loaded). Key variables:
@@ -87,6 +105,20 @@ All routes are under `/api`; authenticated routes take `Authorization: Bearer <J
 | `GET/POST /adventures`, `POST /adventures/join`, `GET/PUT /adventures/<id>` | Adventures |
 | `PUT /adventures/<id>/members/me`, `DELETE /adventures/<id>/members/<mid>` | Membership |
 | `GET/POST /adventures/<id>/events`, `DELETE .../events/<eid>` | The chronicle |
+| `GET /srd/options`, `GET /srd/spells` | Reference data for pickers (public) |
+
+### Character validation
+
+On create/update, characters are validated server-side (`app/validation.py`):
+
+- **Strict, when reference data is ingested:** species/race, subrace (must
+  belong to the chosen race), class, subclass (must belong to the chosen
+  class), and background must exist in the reference tables; alignment must be
+  one of the ten canonical values.
+- **Always:** ability scores 1–30, level 1–20, XP/coins non-negative, HP/AC
+  within sane bounds.
+- **Deliberately lenient (homebrew room):** languages, spell lists, equipment,
+  and persona stay free-form; tightening these is a later phase.
 
 Rules enforced server-side: only DMs post `narration`/`note`, edit the
 adventure, or remove others; players may only delete their own events; the last
@@ -94,8 +126,9 @@ DM cannot leave; completed/archived adventures accept no new members.
 
 ## Roadmap (later phases)
 
-1. **Rules validation** — validate sheets against the 5e data (point-buy,
-   class/subclass legality, spell lists) using the site's own JSON data.
+1. ~~**Rules validation**~~ — done for picker fields (race/subrace,
+   class/subclass, background, alignment, numeric bounds). Still open:
+   point-buy/array legality, class spell lists, multiclassing.
 2. **Realtime** — replace polling with WebSockets/SSE; typing and dice presence.
 3. **Table tools** — initiative tracker tied to members, encounter/XP tracking,
    session summaries, image handouts.

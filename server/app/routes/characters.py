@@ -4,6 +4,7 @@ from ..auth_utils import auth_required
 from ..extensions import db
 from ..models import AdventureMember, Character
 from ..uploads import delete_image, save_image
+from ..validation import validate_character
 
 bp = Blueprint("characters", __name__)
 
@@ -86,6 +87,9 @@ def create_character():
 	error = _apply_body(character, body)
 	if error:
 		return jsonify({"error": error}), 400
+	validation_errors = validate_character(character)
+	if validation_errors:
+		return jsonify({"error": "; ".join(validation_errors), "errors": validation_errors}), 400
 	db.session.add(character)
 	db.session.commit()
 	return jsonify({"character": character.to_dict()}), 201
@@ -111,6 +115,10 @@ def update_character(character_id):
 	error = _apply_body(character, request.get_json(silent=True) or {})
 	if error:
 		return jsonify({"error": error}), 400
+	validation_errors = validate_character(character)
+	if validation_errors:
+		db.session.rollback()
+		return jsonify({"error": "; ".join(validation_errors), "errors": validation_errors}), 400
 	db.session.commit()
 	return jsonify({"character": character.to_dict()})
 

@@ -27,6 +27,8 @@ services:
       - "5000:5000"
     volumes:
       - tavern-uploads:/srv/tavern/uploads
+      # Read-only mount of the site's data JSONs, for `python ingest.py`
+      - ../data:/srv/tavern/srd-data:ro
 
 volumes:
   tavern-pgdata:

@@ -25,12 +25,14 @@ def create_app(config_object=None):
 		origins = [o.strip() for o in origins.split(",") if o.strip()]
 	CORS(app, resources={r"/api/*": {"origins": origins}})
 
-	from .routes import adventures, auth, characters, profile
+	from . import models_srd  # noqa: F401 -- register SRD tables with create_all
+	from .routes import adventures, auth, characters, profile, srd
 
 	app.register_blueprint(auth.bp, url_prefix="/api/auth")
 	app.register_blueprint(profile.bp, url_prefix="/api")
 	app.register_blueprint(characters.bp, url_prefix="/api")
 	app.register_blueprint(adventures.bp, url_prefix="/api")
+	app.register_blueprint(srd.bp, url_prefix="/api")
 
 	@app.get("/api/health")
 	def health():

@@ -83,6 +83,10 @@ export const TavernApi = {
 		return this.request("/profile/avatar", {method: "POST", formData});
 	},
 
+	// ==================== Reference data (pickers) ====================
+	pGetSrdOptions () { return this.request("/srd/options"); },
+	pGetSrdSpells () { return this.request("/srd/spells"); },
+
 	// ==================== Characters ====================
 	pGetCharacters () { return this.request("/characters"); },
 	pGetCharacter (id) { return this.request(`/characters/${id}`); },
