@@ -174,7 +174,7 @@ const renderProfile = (user) => {
 						</div>
 						<div class="tvn-field">
 							<label class="tvn-label">Website</label>
-							<input class="tvn-input" name="website" maxlength="255" value="${esc(profile.website || "")}">
+							<input class="tvn-input" name="website" maxlength="255" placeholder="https://example.com" value="${esc(profile.website || "")}">
 						</div>
 					</div>
 					<div class="tvn-field">

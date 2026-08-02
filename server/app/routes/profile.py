@@ -1,3 +1,5 @@
+from urllib.parse import urlparse
+
 from flask import Blueprint, g, jsonify, request
 
 from ..auth_utils import auth_required
@@ -11,8 +13,27 @@ _TEXT_FIELDS = {
 	"displayName": ("display_name", 64),
 	"pronouns": ("pronouns", 32),
 	"location": ("location", 64),
-	"website": ("website", 255),
 }
+
+
+def _normalize_website(value):
+	"""Validate a website URL; returns (normalized, error). Bare domains get https://."""
+	value = (value or "").strip()
+	if not value:
+		return None, None
+	candidate = value if "://" in value else f"https://{value}"
+	if len(candidate) > 255:
+		return None, "website must be at most 255 characters"
+	parsed = urlparse(candidate)
+	host = parsed.hostname or ""
+	if (
+		parsed.scheme not in ("http", "https")
+		or not host
+		or ("." not in host and host != "localhost")
+		or any(c.isspace() for c in candidate)
+	):
+		return None, "website must be a valid http(s) URL, e.g. https://example.com"
+	return candidate, None
 
 
 def _get_profile():
@@ -41,6 +62,12 @@ def update_profile():
 			if value and len(value) > max_len:
 				return jsonify({"error": f"{key} must be at most {max_len} characters"}), 400
 			setattr(profile, attr, value)
+
+	if "website" in body:
+		website, error = _normalize_website(body["website"])
+		if error:
+			return jsonify({"error": error}), 400
+		profile.website = website
 
 	if "bio" in body:
 		bio = (body["bio"] or "").strip() or None
